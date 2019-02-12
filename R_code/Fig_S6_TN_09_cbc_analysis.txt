@@ -1,0 +1,190 @@
+rm(list = ls())
+library(plyr)
+library(survival)
+library(gdata)
+library(survival)
+library(reshape2)
+library(ggplot2); library(reshape2)
+library(limma)
+library(ggsignif)
+library(lmerTest)
+library(car)
+
+## set defaults
+theme_set(theme_bw(26) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+update_geom_defaults("point", aes(size = 3))
+
+## load values
+
+setwd("~/Desktop/TN-09_GitHub/data_files")
+
+cbc = read.csv("TN09_CBC_data.cleaned_untransformed_2018-08-23.csv", stringsAsFactors = F)
+
+cbc.rna = read.csv("TN09_CBC_RNAseq_merged.cleaned_untransformed_2018-08-23.csv", stringsAsFactors = F)
+cbc.rna$id.y = NULL
+cbc.rna$visit.y = NULL
+colnames(cbc.rna) = gsub("id.x", "id", colnames(cbc.rna))
+colnames(cbc.rna) = gsub("visit.x", "visit", colnames(cbc.rna))
+
+flow = cbc
+
+## load counts
+setwd("~/Desktop/TN-09_GitHub/data_files")
+
+CPM= readRDS("combined_TN-09_TMM_counts_after_redo_qc_071916.rds")
+
+## load anno
+anno.keep <- read.delim("anno_TN-09_keep.libs.txt", stringsAsFactors=FALSE)
+anno.keep$date2 = as.Date(anno.keep$date, format = "%m/%d/%y")
+
+anno = anno.keep
+colnames(anno) = gsub("Day", "days", colnames(anno))
+anno$id.days = paste(anno$id, anno$days, sep = "_")
+
+## load auc
+
+auc <- read.delim("TN-09_2hr_C-peptide_AUC_with_normalization.txt")
+auc$days = auc$week*7
+auc$id.days = paste(auc$id, auc$days, sep = "_")
+
+anno.auc = merge(anno, auc, by = "id.days")
+auc.sub = subset(anno.auc, libID %in% anno$libID)
+
+DF.anno = read.delim("TN-09_autoantibody_levels_long_format.txt", sep = "\t", header = T, stringsAsFactors =F)
+
+var = c("mIAA")
+to.plot = subset(DF.anno, DF.anno$variable == var) # all samples
+
+to.plot = subset(DF.anno, DF.anno$variable == var & DF.anno$treatment == "CTLA-4Ig") # subset to active only
+colnames(to.plot) = gsub("Age.at.Enrollment", "Age", colnames(to.plot))
+to.plot$group = ifelse(to.plot$Age > median(to.plot$Age), "older", "younger")
+to.plot.V0 = subset(to.plot, Visit == 0)
+to.plot.older = subset(to.plot, group == "older")
+to.plot.younger = subset(to.plot, group == "younger")
+to.plot.V0$abGr = ifelse(to.plot.V0$value > median(to.plot.V0$value), "high", "low")
+
+prob1 = 0.75
+
+qtop = quantile(to.plot$slope, probs= prob1)
+to.plot$quart = ifelse(to.plot$slope>=qtop, "slow",
+ 			ifelse(to.plot$slope<=qtop, "fast", "middle"))
+			
+#
+fast = subset(to.plot, quart == "fast")
+slow = subset(to.plot, quart == "slow")
+
+flow = subset(flow, id %in% to.plot$id)
+
+flow$quart  = ifelse(flow$id %in% fast$id, "fast",
+				ifelse(flow$id %in% slow$id, "slow", "other"))
+
+param = c("Ratio")
+
+flow = subset(flow, !visit %in% c("2 years, 6 months", "3 years, 6 months", "4 years", "prn", "screening"))
+flow$visit = gsub("baseline", 0, flow$visit)
+flow$visit = gsub("3 years", 1095, flow$visit)
+flow$visit = gsub("day ", "", flow$visit)
+flow$visit = as.numeric(flow$visit)
+
+#flow.plot = subset(flow, !quart == "other" & Population.Name %in% flow.var & Parameter == param)
+flow.sub = data.frame(id = flow$id, visit = flow$visit, group = flow$progression, neutrophils = flow$neutrophils, lymphocytes = flow$lymphocytes, monocytes = flow$monocytes)
+
+mfs = melt(flow.sub, measure.vars = c("neutrophils", "lymphocytes", "monocytes"))
+mfs$visit = ifelse(mfs$visit<0, 0, mfs$visit)
+colnames(mfs) = gsub("variable", "Population.Name", colnames(mfs) )
+
+##
+## normalize flow values by Cell type
+flow.plot = mfs
+flow.plot = na.omit(flow.plot)
+
+xnames = unique(as.character(flow.plot$Population.Name))
+ncx = length(xnames)
+
+DF <- mfs
+DF = DF[FALSE,]
+DF = data.frame(DF, zValue = as.numeric(), stringsAsFactors = F)
+
+for (i in 1:ncx) { 
+  q = as.character(xnames[i])
+  qsub = subset(flow.plot, Population.Name == q)
+  qsub$zValue = (qsub$value-mean(qsub$value))/sd(qsub$value)
+  DF = rbind(DF, qsub)
+  }
+
+DF$age = ifelse(DF$id %in% to.plot.older$id, "older", 
+			ifelse(DF$id %in% to.plot.younger$id, "younger","other"))
+
+colnames(DF) = gsub("group", "Group", colnames(DF))
+DF$Group = gsub("slow", "R", DF$Group)
+DF$Group = gsub("fast", "NR", DF$Group)
+
+## tabulate summary stats
+
+tgc <- ddply(DF, c("Population.Name", "Group",  "visit"), summarise,
+               N    = length(Group),
+               mean = mean(zValue),
+			   median = median(zValue),
+               sd   = sd(zValue),
+               se   = sd / sqrt(N),
+			   mad = mad(zValue)
+)
+tgc = na.omit(tgc)
+tgc = subset(tgc, N >=5)
+tgc$cells = ifelse(tgc$Population.Name == "neutrophils", "Neutrophils",
+				ifelse(tgc$Population.Name == "lymphocytes", "Lymphocytes",
+					ifelse(tgc$Population.Name == "monocytes", "Monocytes","other")))
+
+tgc = subset(tgc, visit <= 1000)
+
+tgc$cells = factor(tgc$cells, levels = c("Neutrophils", "Lymphocytes", "Monocytes"))
+## plot normalized values
+
+dev.off()
+quartz(height =8, width =16, dpi =72);
+theme_set(theme_bw(36) + theme(panel.grid.major = element_blank(), 
+                         panel.grid.minor = element_blank()) +
+                         theme(legend.key = element_blank()))
+update_geom_defaults("point", aes(size = 6))
+update_geom_defaults("line", aes(size = 2))
+
+cbPalette = c("#2b8cbe","#d7191c")
+
+ggplot(tgc, aes(x = visit, y = (mean))) + geom_line(aes(colour = Group, group = Group)) + facet_grid(~cells) + scale_colour_manual(values=cbPalette)
+last_plot() + geom_errorbar(data = tgc, aes(ymin=mean-se, ymax=mean+se, width=2, colour = Group))
+last_plot() + labs (x = "Time (days)", y = "Percentage, normalized\nMean +/- SE")
+last_plot() + geom_vline(xintercept = 700, lty = "dotted", size = 1.5)
+last_plot() + scale_x_continuous(breaks = c(0, 250, 500, 750))
+
+## models
+## neutrophils lymphocytes monocytes
+
+cell.var = c("monocytes")
+to.model = subset(DF, Population.Name == cell.var)
+
+table(to.model$Population.Name, to.model$visit, to.model$Group); summary(to.model$value)
+
+library(lmerTest)
+m1 = lmer(zValue~visit+Group+ (1 | id), to.model); summary(m1) 
+m2 = lmer(zValue~visit+Group+ visit*Group + (1 | id), to.model); summary(m2) 
+Anova(m2, type="II")
+
+plot(fitted(m1), 
+     residuals(m1))
+	 
+plot(fitted(m2), 
+     residuals(m2))
+AIC(m1)
+AIC(m2)	 
+
+library(car)
+Anova(m1, type="II") 
+Anova(m2, type="II") 
+
+## compare normalized versus non- normalized values
+
+dev.off()
+quartz(height =8, width =8, dpi =72);
+update_geom_defaults("point", aes(size = 3))
+ggplot(to.model, aes(x = log10(value), y = zValue)) + geom_point()
+

@@ -1,0 +1,121 @@
+rm(list = ls())
+library(plyr)
+library(survival)
+library(gdata)
+library(survival)
+library(reshape2)
+library(ggplot2); library(reshape2)
+library(limma)
+library(ggsignif)
+library(lmerTest)
+library(car)
+
+## set defaults
+theme_set(theme_bw(26) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+update_geom_defaults("point", aes(size = 3))
+
+## load counts
+
+setwd("~/Desktop/TN-09_GitHub/data_files")
+filename1 = "combined_TN-09_TMM_batch_corr_date_method_after_redo_qc_071916.rds"
+
+counts.corr.tmm = readRDS(filename1)
+  
+anno.keep <- read.delim("anno_TN-09_keep.libs.txt", stringsAsFactors=FALSE)
+anno.keep$date2 = as.Date(anno.keep$date, format = "%m/%d/%y")
+
+slopes = read.csv("TN09.cpeptide_AUC_half-life_and_rate_of_change_from_models.csv", stringsAsFactors = F, header = T) # original file
+colnames(slopes) = c("id", "days.to.50.orig", "slope.orig", "days.to.50", "slope")
+
+## merge anno and slopes
+anno.slopes = merge(anno.keep, slopes, by = "id") 
+
+anno.or = subset(anno.slopes, !libID %in% c("lib4922", "lib4950", "lib4965", "lib4975", "lib4980", "lib4997", "lib5131")) # remove bad libs
+
+anno = anno.or
+anno$id.days = paste(anno$id, anno$Day, sep = "_")
+ 
+prob = 0.75
+q75 = quantile(anno$slope, probs= prob)
+q25 = quantile(anno$slope, probs= 1-prob)
+
+anno$q = ifelse(anno$slope>=q75, "top",
+			ifelse(anno$slope<=q25, "bot", "middle"))
+top = subset(anno, anno$slope>=q75) 
+bot = subset(anno, anno$slope<q75) 
+
+anno.dr = anno[!duplicated(anno$id),]
+
+anno.old = subset(anno.dr, age>median(anno.dr$age))
+anno.young = subset(anno.dr, age<=median(anno.dr$age))
+
+anno.old.all = subset(anno, age>median(anno$age))
+anno.young.all = subset(anno, age<=median(anno$age))
+
+anno.dr$group = ifelse(anno.dr$libID %in% anno.old$libID, "old",
+				ifelse(anno.dr$libID %in% anno.young$libID, "young", "other"))
+
+## load auc
+
+auc <- read.delim("TN-09_2hr_C-peptide_AUC_with_normalization.txt")
+auc$days = auc$week*7
+auc$id.days = paste(auc$id, auc$days, sep = "_")
+
+anno.auc = merge(anno, auc, by = "id.days")
+auc.sub = subset(anno.auc, libID %in% anno$libID)
+auc.active = subset(anno.auc, arm == "CTLA4Ig")
+
+## select data
+counts = subset(counts.corr.tmm, select = colnames(counts.corr.tmm) %in% anno$libID)
+counts = data.frame(counts)
+counts = counts[c(anno$libID)]
+ 
+table(ifelse(colnames(counts) == anno$libID, 1, 0)) # 272 = 1
+
+active = subset(anno, anno$treatment == "active")
+placebo = subset(anno, anno$treatment == "placebo")
+
+ ## separate active by quartiles
+ 
+prob1 = 0.75
+
+qtop = quantile(active$slope, probs= prob1)
+qbot = quantile(active$slope, probs= 1-prob1)
+
+active$q = ifelse(active$slope>=qtop, "top",
+ 			ifelse(active$slope<=qtop, "bot", "middle"))
+top = subset(active, active$slope>qtop) 
+bot = subset(active, active$slope<=qtop) 
+
+mods = read.delim("Supp_Table_1_Genes\ in\ immune\ molecular\ modules.gmx", header = T, stringsAsFactors = F)
+
+counts.use = subset(counts, select = colnames(counts) %in% top$libID | colnames(counts) %in% bot$libID)
+
+counts.use = as.data.frame(counts.use)
+anno.use = subset(anno, libID %in% colnames(counts.use))
+counts.use = counts.use[c(anno.use$libID)]
+
+mod.var = c("CD19.mod")
+counts.sub = subset(counts.use, row.names(counts.use) %in% mods[, mod.var])
+counts.sub = na.omit(counts.sub)
+med = apply(log2(counts.sub+1), 2, median)
+anno.use$med = as.numeric(med)
+anno.use$q = NULL
+anno.use$quar = ifelse(anno.use$id %in% top$id, "R" , 
+				ifelse(anno.use$id %in% bot$id, "NR" , "other"))
+
+to.plot = subset(anno.use, !Day == 1080)
+
+dev.off()
+quartz(height =9, width =12, dpi =72);
+theme_set(theme_bw(44) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+update_geom_defaults("point", aes(size = 14))
+
+ggplot(to.plot , aes(y = med, x = quar, group = quar)) + geom_boxplot(fill = "#8da0cb", outlier.color = NA) + facet_grid(~Day)
+
+last_plot() + geom_dotplot(data = to.plot, aes( x = quar, y = med), position = "identity", method = "histodot", binaxis = "y", stackdir = "center", dotsize =0.75) + facet_grid(~Day)
+
+last_plot() + scale_y_continuous(limits = c(3,5.25))#, breaks = c(0, 3, 6))
+last_plot() + geom_signif(comparisons = list(c("R", "NR")), y_position = 5, textsize = 12,  map_signif_level = T, na.rm = T)
+last_plot() + labs(x = "", y = "B cell gene expression,\nlog2(median(CD19.mod+1)")
+

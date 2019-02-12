@@ -1,0 +1,162 @@
+####
+rm(list = ls())
+
+library(bestNormalize)
+library(lmerTest)
+library(plyr)
+library(ggsignif)
+
+library(ggplot2); library(reshape2); theme_set(theme_bw(26) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+ update_geom_defaults("point", aes(size = 4))
+
+setwd("~/Desktop/TN-09_GitHub/data_files")
+
+# load Ab data set 
+DF.anno = read.delim("TN-09_autoantibody_levels_long_format.txt", sep = "\t", header = T, stringsAsFactors =F)
+
+var = c("ICA512")
+to.plot = subset(DF.anno, DF.anno$variable == var) # subset
+#to.plot = DF.anno # all samples
+
+## normalize data
+temp = bestNormalize(to.plot$value) # orderNorm Transformation choen for GAD65, miAA and ICA512, but not ICA. Omit ICA
+to.plot$value = temp$x.t
+
+## check distibutions
+ggplot(to.plot, aes(x = value)) + geom_histogram()
+
+#to.plot = subset(DF.anno, DF.anno$variable == var & DF.anno$treatment == "CTLA-4Ig") # subset to active only
+colnames(to.plot) = gsub("Age.at.Enrollment", "Age", colnames(to.plot))
+to.plot$group = ifelse(to.plot$Age > median(to.plot$Age), "older", "younger")
+to.plot.V0 = subset(to.plot, Visit == 0)
+to.plot.V0$abGr = ifelse(to.plot.V0$value > median(to.plot.V0$value), "high", "low")
+
+prob1 = 0.75
+
+qtop = quantile(to.plot$slope, probs= prob1)
+
+## tabulate summary stats
+
+to.plot$treatment = gsub("CTLA-4Ig", "abatacept", to.plot$treatment)
+to.plot$treatment = gsub("Placebo", "placebo", to.plot$treatment)
+
+to.plot$group = ifelse(to.plot$treatment == "placebo" , "placebo",
+ 					ifelse(to.plot$treatment == "abatacept" & to.plot$slope>qtop, "R", 
+						ifelse(to.plot$treatment == "abatacept" & to.plot$slope<=qtop, "NR","other")))
+#
+to.plot$age = ifelse(to.plot$Age.at.T1D.diagnosis >median(to.plot$Age.at.T1D.diagnosis), "older", "younger")
+				
+## summarize
+## by treatment
+
+tgc <- ddply(to.plot, c("Visit", "treatment", "variable"), summarise,
+               N    = length(treatment),
+               mean = mean(value),
+			   median = median(value),
+               sd   = sd(value),
+               se   = sd / sqrt(N),
+			   mad = mad(value)
+)
+tgc = na.omit(tgc)
+
+## make plots of individual autoantibodies
+
+dev.off()
+quartz(height =10, width =12, dpi =72);
+theme_set(theme_bw(36) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+update_geom_defaults("line", aes(size = 2))
+update_geom_defaults("errorbar", aes(size = 2))
+
+cbPalette = c("#2b8cbe","#d7191c")
+
+ggplot(tgc, aes(x = Visit, y = mean)) + geom_line(aes(group = treatment, colour = treatment)) + scale_colour_manual(values=cbPalette)
+#last_plot() + scale_y_continuous(limits = c(5.8, 6.4)) 
+last_plot() + geom_errorbar(data = tgc, aes(ymin=mean-se, ymax=mean+se, width=2, colour = treatment)) + scale_colour_manual(values=cbPalette)
+last_plot() + labs(x = "Visit, days", y = "Mean Ab levels (normalized) +/- SE)")
+last_plot() + geom_vline(xintercept = 700, lty = "dotted", size = 1.5)
+
+## models
+to.model = to.plot
+to.model = subset(to.plot, !Visit >700) # focus on treatmentn period to make more linear
+m = lmer(value~Visit+treatment + Visit*treatment + (1|id), data = to.model); summary(m) # 
+
+Anova(m, type="II") 
+
+## by age
+
+tgc <- ddply(to.plot, c("Visit", "age",  "treatment", "variable"), summarise,
+               N    = length(treatment),
+               mean = mean(value),
+			   median = median(value),
+               sd   = sd(value),
+               se   = sd / sqrt(N),
+			   mad = mad(value)
+)
+tgc = na.omit(tgc)
+
+tgc$age = factor(tgc$age, levels = c("younger", "older"))
+
+quartz(height =10, width =12, dpi =72);
+theme_set(theme_bw(36) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+update_geom_defaults("line", aes(size = 2))
+update_geom_defaults("errorbar", aes(size = 2))
+
+cbPalette = c("#2b8cbe","#d7191c")
+
+ggplot(tgc, aes(x = Visit, y = mean)) + geom_line(aes(colour = treatment)) + facet_wrap(~age) + scale_colour_manual(values=cbPalette)
+#last_plot() + scale_y_continuous(limits = c(5.8, 6.4)) 
+last_plot() + geom_errorbar(data = tgc, aes(ymin=mean-se, ymax=mean+se, width=2, colour = treatment)) + scale_colour_manual(values=cbPalette)
+last_plot() + labs(x = "Visit, days", y = "Mean Ab levels (normalized) +/- SE)")
+last_plot() + geom_vline(xintercept = 700, lty = "dashed")
+
+to.model.old = subset(to.plot, age == "older" & Visit <700)
+to.model.young = subset(to.plot, age == "younger" & Visit <700)
+
+m.old = lmer(value~Visit+treatment + Visit*treatment+ (1|id), data = to.model.old); summary(m.old) # 
+
+m.young = lmer(value~Visit+treatment +  Visit*treatment+ (1|id), data = to.model.young); summary(m.young) #
+
+Anova(m.old, type="II") 
+Anova(m.young, type="II") 
+
+## by group
+
+tgc <- ddply(to.plot, c("Visit", "group", "variable"), summarise,
+                N    = length(treatment),
+                mean = mean(value),
+ 			   median = median(value),
+                sd   = sd(value),
+                se   = sd / sqrt(N),
+ 			   mad = mad(value)
+ )
+ tgc = na.omit(tgc)
+ tgc$group = factor(tgc$group, levels = c("placebo", "NR", "R"))
+
+ dev.off()
+ quartz(height =10, width =12, dpi =72);
+ theme_set(theme_bw(36) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+ update_geom_defaults("line", aes(size = 2))
+ update_geom_defaults("errorbar", aes(size = 2))
+
+ cbPalette = c("#d7191c", "#084081", "#7bccc4")
+
+ ggplot(tgc, aes(x = Visit, y = mean)) + geom_line(aes(colour = group)) + scale_colour_manual(values=cbPalette)
+ #last_plot() + scale_y_continuous(limits = c(5.8, 6.4)) 
+ last_plot() + geom_errorbar(data = tgc, aes(ymin=mean-se, ymax=mean+se, width=2, colour = group)) + scale_colour_manual(values=cbPalette)
+ last_plot() + labs(x = "Visit, days", y = "Mean Ab levels (normalized) +/- SE)")
+ last_plot() + geom_vline(xintercept = 700, lty = "dotted", size = 1.5)
+
+## fit by group
+
+to.model = to.plot[c("id", "Visit", "value", "group")]
+to.model = subset(to.model, Visit <700)
+to.model$id = as.character(to.model$id)
+to.model$group = factor(to.model$group)
+to.model$group = factor(to.model$group, levels = c("placebo", "NR", "R"))
+
+m1 = lme4::lmer(value~Visit+group + (1|id), data = to.model); summary(m1) 
+m2 = lme4::lmer(value~Visit+group + Visit*group + (1|id), data = to.model); summary(m2) 
+Anova(m2, type="II") 
+
+
+ 

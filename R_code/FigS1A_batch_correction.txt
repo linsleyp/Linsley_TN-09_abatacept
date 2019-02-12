@@ -1,0 +1,195 @@
+rm(list = ls())
+
+library(edgeR)
+library(plyr)
+library(survival)
+library(gdata)
+library(survival)
+library(reshape2)
+library(ggplot2); library(reshape2)
+library(limma)
+library(ggsignif)
+library(lmerTest)
+library(car)
+
+
+## set defaults
+theme_set(theme_bw(26) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+update_geom_defaults("point", aes(size = 3))
+
+## load uncorrected counts
+
+setwd("~/Desktop/TN-09_GitHub/data_files")
+CPM= readRDS("combined_TN-09_TMM_counts_after_redo_qc_071916.rds")
+
+## load corrected counts
+filename1 = "combined_TN-09_TMM_batch_corr_date_method_after_redo_qc_071916.rds"
+
+CPM.cor = readRDS(filename1)
+
+anno.keep <- read.delim("anno_TN-09_keep.libs.txt", stringsAsFactors=FALSE)
+anno.keep$date2 = as.Date(anno.keep$date, format = "%m/%d/%y")
+
+anno = anno.keep
+
+fish = subset(anno, anno$Source == "Fisher")
+jin = subset(anno, anno$Source == "Jinfiniti")
+
+active = subset(anno, anno$treatment == "active")
+placebo = subset(anno, anno$treatment == "placebo")
+
+t0 = subset(anno, anno$Day == 0)
+t84 = subset(anno, anno$Day == 84)
+t728 = subset(anno, anno$Day == 728)
+
+t0a = subset(anno, anno$Day == 0 & anno$treatment == "active")
+t0p = subset(anno, anno$Day == 0 & anno$treatment == "placebo")
+t84a = subset(anno, anno$Day == 84 & anno$treatment == "active")
+t84p = subset(anno, anno$Day == 84 & anno$treatment == "placebo")
+t728a = subset(anno, anno$Day == 728 & anno$treatment == "active")
+t728p = subset(anno, anno$Day == 728 & anno$treatment == "placebo")
+
+rnd1 = subset(anno, anno$Random_Tpt == 1)
+rnd2 = subset(anno, anno$Random_Tpt == 2)
+rnd3 = subset(anno, anno$Random_Tpt == 3)
+
+abi = subset(anno, anno$method == "ABI 6100")
+tsk = subset(anno, method == "Thermo Scientific Kingfisher")
+
+## 
+
+anno.sub = subset(anno.keep, !Day == 1080)
+
+## load rates of progression
+slopes = read.csv("TN09.cpeptide_AUC_half-life_and_rate_of_change_from_models.csv", stringsAsFactors = F, header = T)
+colnames(slopes) = c("id", "days.to.50", "slope")
+
+## merge anno and slopes
+anno.slopes = merge(anno.sub, slopes, by = "id") 
+anno.slopes$id.days = paste(anno.slopes$id, anno.slopes$Day, sep = "_")
+
+anno.use = subset(anno.slopes, !libID %in% c("lib4922", "lib4950", "lib4965", "lib4975", "lib4980", "lib4997", "lib5131")) # remove bad libs
+
+counts.var = c("CPM.cor")
+counts.br = get(counts.var)
+counts.br = as.data.frame(counts.br)
+counts.br = subset(counts.br, select = colnames(counts.br) %in% anno.use$libID)
+counts.br = counts.br[c(anno.use$libID)]
+
+table(ifelse(anno.use$libID == colnames(counts.br), 1, 0))
+
+### PCA
+
+pca.var = counts.br
+
+comData = t(log2(pca.var+1))
+
+logCounts = comData
+
+# perform PCA
+pca_test = prcomp(logCounts, center = TRUE)
+pca_out = data.frame(pca_test$x)
+
+## make plots
+
+var = pca_out
+var = as.data.frame(var)
+
+x = colnames(var)[1]
+y = colnames(var)[2]
+
+var$set = ifelse(row.names(var) %in% fish$libID, "Fisher", ifelse(row.names(var) %in% jin$libID, "Jinfiniti", "FC4" ))
+
+var$visit = ifelse(row.names(var) %in% t0$libID, "0", 
+			ifelse(row.names(var) %in% t84$libID, "84", 
+				ifelse(row.names(var) %in% t728$libID, "728", "1080")))
+#
+var$visit = factor(var$visit, levels = c("0","84", "728"))
+
+var$method = ifelse(row.names(var) %in% abi$libID, "ABI", 
+			ifelse(row.names(var) %in% tsk$libID, "TSK", "other"))
+
+var$treat. = ifelse(row.names(var) %in% active$libID, "aba", "placebo")
+
+## select top and bottom sets
+
+prob = 0.75
+#q75 = quantile(anno.use$slope, probs= prob)
+q75 = -0.241504 # this is q75 fioor active, to project on to placebo
+
+var$group = ifelse(anno.use$slope>q75, "R",
+			ifelse(anno.use$slope<=q75, "NR", "middle"))
+
+# select PCs that explain most of the variation
+
+sumPCall = summary(pca_test)
+pc1All = paste("PC1 (", round(100*sumPCall$importance[2, 1], 1),  "%)", sep="")
+pc2All = paste("PC2 (", round(100*sumPCall$importance[2, 2], 1),  "%)", sep="")
+pc3All = paste("PC3 (", round(100*sumPCall$importance[2, 3], 1),  "%)", sep="")
+
+## make plots  from here #######################
+
+## plot by method
+dev.off()
+quartz(height =5, width =7, dpi =72);
+theme_set(theme_bw(36) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+update_geom_defaults("line", aes(size = 2))
+update_geom_defaults("errorbar", aes(size = 2))
+update_geom_defaults("point", aes(size = 4))
+
+cbPalette = c("#d7191c", "#084081", "#7bccc4")
+
+col.var = c("method")
+
+ggplot(var, aes(x = get(x), y = get(y))) + geom_point(aes(colour = method), alpha = 0.5) + scale_colour_manual(values = cbPalette)
+last_plot() + labs(x = x, y = y) ## batch removal worked well
+last_plot() + labs(x = pc1All, y = pc2All)
+
+setwd("~/Desktop/")
+filename1 = paste(counts.var, "counts_color_by", col.var, "TN-09_PCA_batch_removal.pdf", sep = "_")
+quartz.save(filename1,type = "pdf", dpi = 75, bg = "transparent")
+
+## plot by visit
+
+col.var = c("visit")
+
+ggplot(var, aes(x = get(x), y = get(y))) + geom_point(aes(colour = visit), alpha = 0.5) + scale_colour_manual(values = cbPalette)
+last_plot() + labs(x = x, y = y) ## batch removal worked well
+last_plot() + labs(x = pc1All, y = pc2All)
+
+setwd("~/Desktop/")
+filename2 = paste(counts.var, "counts_color_by", col.var, "TN-09_PCA_batch_removal.pdf", sep = "_")
+quartz.save(filename2,type = "pdf", dpi = 75, bg = "transparent")
+
+## by treatment
+
+col.var = c("treat.")
+
+ggplot(var, aes(x = get(x), y = get(y))) + geom_point(aes(colour = treat.), alpha = 0.5) + scale_colour_manual(values = cbPalette)
+last_plot() + labs(x = x, y = y) ## batch removal worked well
+last_plot() + labs(x = pc1All, y = pc2All)
+
+setwd("~/Desktop/")
+filename3 = paste(counts.var, "counts_color_by", col.var, "TN-09_PCA_batch_removal.pdf", sep = "_")
+quartz.save(filename3,type = "pdf", dpi = 75, bg = "transparent")
+
+## by group
+
+col.var = c("group")
+
+ggplot(var, aes(x = get(x), y = get(y))) + geom_point(aes(colour = group), alpha = 0.5) + scale_colour_manual(values = cbPalette)
+last_plot() + labs(x = x, y = y) ## batch removal worked well
+last_plot() + labs(x = pc1All, y = pc2All)
+
+setwd("~/Desktop/")
+filename4 = paste(counts.var, "counts_color_by", col.var, "TN-09_PCA_batch_removal.pdf", sep = "_")
+quartz.save(filename4,type = "pdf", dpi = 75, bg = "transparent")
+
+##
+tab = table(var$visit, var$method); # fisher.test p-value = <2e-16
+fisher.test(tab)
+tab = table(var$group, var$method) # fisher.test p-value = 0.625
+fisher.test(tab)
+tab = table(var$treat., var$method); # fisher.test p-value = 0.673
+fisher.test(tab)
+

@@ -1,0 +1,207 @@
+rm(list = ls())
+library(plyr)
+library(survival)
+library(gdata)
+library(survival)
+library(reshape2)
+library(ggplot2); library(reshape2)
+library(limma)
+library(ggsignif)
+library(lmerTest)
+library(car)
+
+## set defaults
+theme_set(theme_bw(26) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+update_geom_defaults("point", aes(size = 3))
+
+## load counts
+setwd("~/Desktop/TN-09_GitHub/data_files")
+
+filename1 = "combined_TN-09_TMM_batch_corr_date_method_after_redo_qc_071916.rds"
+ 
+counts.corr.tmm = readRDS(filename1)
+ 
+##load anno 
+ 
+anno.keep <- read.delim("anno_TN-09_keep.libs.txt", stringsAsFactors=FALSE)
+anno.keep$date2 = as.Date(anno.keep$date, format = "%m/%d/%y")
+
+anno.clin = read.delim("TN09 Clinical_Unblinded Data_Linsley 20150511.txt", stringsAsFactors = F)
+colnames(anno.clin)[2] = c("id")
+
+anno.clin = anno.clin[, (1:9)]
+
+anno.keep = merge(anno.keep, anno.clin, by = "id")
+
+## load rates of progression
+slopes = read.csv("TN09.cpeptide_AUC_half-life_and_rate_of_change_from_models.csv", stringsAsFactors = F, header = T)
+colnames(slopes) = c("id", "days.to.50", "slope")
+
+## merge anno and slopes
+anno.slopes = merge(anno.keep, slopes, by = "id") 
+anno.slopes$id.days = paste(anno.slopes$id, anno.slopes$Day, sep = "_")
+
+anno.or = subset(anno.slopes, !libID %in% c("lib4922", "lib4950", "lib4965", "lib4975", "lib4980", "lib4997", "lib5131")) # remove bad libs
+
+##
+anno = subset(anno.or, treatment == "active") # selective active subset
+#anno = anno.or # for active versus placebo
+
+counts = counts.corr.tmm
+counts = subset(counts.corr.tmm, select = colnames(counts) %in% anno$libID)
+counts = as.data.frame(counts)
+
+## select top and bottom sets
+
+prob = 0.75
+q75 = quantile(anno$slope, probs= prob)
+q25 = quantile(anno$slope, probs= 1-prob)
+#q75 = -0.241504 # this is q75 fioor active, to project on to placebo
+
+anno$q = ifelse(anno$slope>q75, "top",
+			ifelse(anno$slope<=q75, "bot", "middle"))
+top = subset(anno, anno$slope>q75) 
+bot = subset(anno, anno$slope<=q75) 
+
+#table(anno$q, anno$treatment) # compare active and placebo
+     
+#      active placebo
+#  bot    137      77
+#  top     47      11
+#> df = table(anno$q, anno$treatment)
+#> fisher.test(df)
+
+#	Fisher's Exact Test for Count Data
+
+#data:  df
+#p-value = 0.0171
+#alternative hypothesis: true odds ratio is not equal to 1
+#95 percent confidence interval:
+# 0.1841906 0.8771075
+#sample estimates:
+#odds ratio 
+# 0.4176448 
+## NB distributions of fast vs slow progressors are not the same in active and ploaceboi-treated groups
+
+## load auc
+
+auc <- read.delim("TN-09_2hr_C-peptide_AUC_with_normalization.txt")
+auc$days = auc$week*7
+auc$id.days = paste(auc$id, auc$days, sep = "_")
+
+anno.auc = merge(anno, auc, by = "id.days")
+auc.sub = subset(anno.auc, libID %in% anno$libID)
+
+## select data
+counts = counts
+anno = anno
+
+active = subset(anno, anno$treatment == "active")
+placebo = subset(anno, anno$treatment == "placebo")
+
+t0 = subset(anno, anno$Day == 0)
+t84 = subset(anno, anno$Day == 84)
+t728 = subset(anno, anno$Day == 728)
+
+t0a = subset(anno, anno$Day == 0 & anno$treatment == "active")
+t0p = subset(anno, anno$Day == 0 & anno$treatment == "placebo")
+t84a = subset(anno, anno$Day == 84 & anno$treatment == "active")
+t84p = subset(anno, anno$Day == 84 & anno$treatment == "placebo")
+t728a = subset(anno, anno$Day == 728 & anno$treatment == "active")
+t728p = subset(anno, anno$Day == 728 & anno$treatment == "placebo")
+
+## separate active by time and rate of progresson
+ 
+t0a.q1 = subset(active, active$Day == 0 & active$treatment == "active" & active$libID %in% top$libID)
+t84a.q1 = subset(active, active$Day == 84 & active$treatment == "active" & active$libID %in% top$libID)
+t728a.q1 = subset(active, active$Day == 728 & active$treatment == "active" & active$libID %in% top$libID)
+ 
+t0a.q4 = subset(active, active$Day == 0 & active$treatment == "active" & active$libID %in% bot$libID)
+t84a.q4 = subset(active, active$Day == 84 & active$treatment == "active" & active$libID %in% bot$libID)
+t728a.q4 = subset(active, active$Day == 728 & active$treatment == "active" & active$libID %in% bot$libID)
+
+## select visit to test
+
+t = 84
+cont.var = c("progression")
+model = c("progression")
+ 
+ta = paste("t", t, "a.q1", sep = "")
+tp = paste("t", t, "a.q4", sep = "")
+
+var1 = get(ta)
+var2 = get(tp)
+counts.var1 = subset(counts, select = colnames(counts) %in% var1$libID)
+counts.var2 = subset(counts, select = colnames(counts) %in% var2$libID)
+ 
+counts.limma = cbind(counts.var1, counts.var2)
+
+anno.slow = get(paste("t", t, "a.q1", sep = ""))
+anno.fast = get(paste("t", t, "a.q4", sep = ""))
+
+anno.to.use = rbind(anno.fast, anno.slow)
+counts.limma = counts.limma[c(anno.to.use$libID)]
+
+## test to see that anno and colnames(counts) are in same order
+table(ifelse(colnames(counts.limma)== anno.to.use$libID, 1, 0))
+
+## select and order counts to match anno
+
+counts = counts.limma
+anno.to.use = anno.to.use
+counts = subset(counts, select = colnames(counts) %in% anno.to.use$libID)
+ 
+## melt counts and subset to genes of interest
+
+counts.symbol = data.frame(symbol = row.names(counts), counts)
+mc = melt(counts.symbol)
+
+## specify individual genes
+b = c("MS4A1", "CD22", "CD19", "CD72","IGHD")
+my = c("DEFA3", "IL18","CD14", "CLEC12A", "PYCARD")
+gene = c(b, my)
+gene.set = gene
+
+## subset to selected gene(s)
+sub = subset(mc, symbol %in% gene.set)
+colnames(sub) = gsub("variable", "libID", colnames(sub))
+
+to.plot = merge(sub, anno.to.use, by = "libID")
+to.plot$symbol = factor(to.plot$symbol, levels = c(gene))
+to.plot$q = gsub("top", "R", to.plot$q)
+to.plot$q = gsub("bot", "NR", to.plot$q)
+to.plot$symbol = as.character(to.plot$symbol)
+to.plot = to.plot[c("libID", "symbol", "q", "value")]
+
+to.plot$symbol = factor(to.plot$symbol)
+to.plot$symbol = factor(to.plot$symbol, levels = gene)
+
+## make plots of status
+
+dev.off()
+quartz(height = 13, width =13, dpi =72);
+library(ggplot2); library(reshape2); theme_set(theme_bw(44) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+update_geom_defaults("point", aes(size = 2))
+
+## set defaults
+theme_set(theme_bw(36) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+
+ggplot(to.plot, aes(x = q, y = log2(value+1))) + geom_violin(draw_quantiles = c(0.5), stat = "ydensity", position = "dodge", fill = "#8da0cb")  + facet_wrap(~symbol, nrow = 2) 
+# add individual dots
+last_plot() + geom_dotplot(data = to.plot, aes(x = q, y = log2(value+1)), position = "identity", method = "histodot", binaxis = "y", stackdir = "center", dotsize = 0.5) + facet_wrap(~symbol, nrow =2)
+
+ymax = log2(max(to.plot$value)+1)
+ymin = log2(min(to.plot$value)+1)
+last_plot() + scale_y_continuous(limits = c(ymin, ymax+1))
+
+last_plot() + geom_signif(comparisons = list(c("R", "NR")), textsize = 12, y_position = ymax+0.5, map_signif_level = c("*****"=0.00001, "****"=0.0001, "***"=0.001, "**"=0.01, "*"=0.05), test = "wilcox.test", test.args=list(alternative = "two.sided", var.equal = F, paired=F))
+
+xlab = ""
+ylab = paste("Gene expression, ", "\nlog2(RPM+1)", sep = "")
+
+last_plot() + labs(x = xlab, y = ylab)
+
+setwd("~/Desktop/")
+filename = paste(gene, ".pdf", sep = "")
+#quartz.save(filename,type = "pdf", dpi = 75, bg = "transparent")
+

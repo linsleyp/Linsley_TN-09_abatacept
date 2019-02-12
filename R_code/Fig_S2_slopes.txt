@@ -1,0 +1,81 @@
+rm(list = ls())
+library(plyr)
+library(survival)
+library(gdata)
+library(survival)
+library(reshape2)
+library(ggplot2); library(reshape2)
+library(limma)
+library(ggsignif)
+library(lmerTest)
+library(car)
+
+## set defaults
+theme_set(theme_bw(26) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+update_geom_defaults("point", aes(size = 3))
+
+## load data
+
+setwd("~/Desktop/TN-09_GitHub/data_files")
+
+anno.keep <- read.delim("anno_TN-09_keep.libs.txt", stringsAsFactors=FALSE)
+ anno.keep$date2 = as.Date(anno.keep$date, format = "%m/%d/%y")
+
+slopes = read.csv("TN09.cpeptide_AUC_half-life_and_rate_of_change_from_models.csv", stringsAsFactors = F, header = T) # recalc without initial visit
+colnames(slopes) = c("id", "days.to.50.orig", "slope.orig", "days.to.50", "slope")
+
+## load auc
+
+auc <- read.delim("TN-09_2hr_C-peptide_AUC_with_normalization.txt")
+auc$days = auc$week*7
+auc$id.days = paste(auc$id, auc$days, sep = "_")
+
+## merge suc and slopes
+auc.all = merge(auc, slopes, by = "id") 
+
+auc.active = subset(auc.all, treatment == "CTLA4Ig")
+ 
+prob = 0.75
+q75 = quantile(auc.active$slope, probs= prob)
+q25 = quantile(auc.active$slope, probs= 1-prob)
+
+auc.active$group = ifelse(auc.active$slope>=q75, "R", "NR")
+auc.active$group = factor(auc.active$group, levels = c("NR", "R"))
+
+colnames(auc.active) = gsub("days.to.50", "surv", colnames(auc.active))
+auc.active$surv = gsub("Inf", 42000, auc.active$surv)
+auc.active$surv = as.numeric(auc.active$surv)
+
+to.plot = subset(auc.active, !treatment == "Placebo")
+to.plot.dr = auc.active[!duplicated(to.plot$id),]
+to.plot.dr = na.omit(to.plot.dr)
+to.plot.dr$surv = ifelse(to.plot.dr$surv <1080, to.plot.dr$surv, 1080)
+
+##plot histogram of slopes
+dev.off()
+
+library(ggplot2); library(reshape2); theme_set(theme_bw(36) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+
+quartz(height =8, width =11, dpi =72);
+
+ggplot(to.plot.dr, aes(x = (slope))) + geom_histogram(fill = "gray")
+last_plot() + geom_vline(xintercept = q75,lty = "dotted", size = 2)
+xlab = "C-peptide 2 hr AUC, (nmole/L/min)"
+last_plot() + labs(x = xlab)
+
+##plot individual C-peptide values
+
+dev.off()
+quartz(height =8, width =11, dpi =72);
+
+library(ggplot2); library(reshape2); theme_set(theme_bw(36) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+update_geom_defaults("line", aes(size = 2))
+
+cbPalette = c("#084081", "#7bccc4")
+
+ggplot(to.plot, aes(x = weeks*7, y = log(aucResults+1))) + geom_line(aes(group = id, colour = group), alpha = 0.5) + scale_colour_manual(values=cbPalette)
+y = "C-peptide 2 hr AUC"
+x = "Time (days)"
+last_plot() + labs(x = x, y = "C-peptide 2 hr AUC")
+last_plot() + geom_vline(xintercept = 700, lty = "dotted", size = 2)
+

@@ -1,0 +1,97 @@
+rm(list = ls())
+library(plyr)
+library(survival)
+library(gdata)
+library(survival)
+library(reshape2)
+library(ggplot2); library(reshape2)
+library(limma)
+library(ggsignif)
+library(lmerTest)
+library(car)
+
+## set defaults
+theme_set(theme_bw(26) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+update_geom_defaults("point", aes(size = 4))
+
+cbPalette = (c('#0072B2','#E69F00','#F0E442'))
+
+## working directory assumed to be inside a GitHub folder on Mac Desktop
+setwd("~/Desktop/TN-09_GitHub/data_files/GSEA/")
+
+## load GSEA data compiled from test of microarray 16 R versus 14 C 12 month samples
+
+upF.0 = read.delim("week_0_up_in_fast_active_only_gsea_report_for_fast_1526685270361.xls.txt", header = T, stringsAsFactors = F)
+upS.0 = read.delim("week_0_up_in_slow_active_only_gsea_report_for_fast_1526685270361.xls.txt", header = T, stringsAsFactors = F)
+
+upF.84 = read.delim("week_84_up_in_fast_active_only_gsea_report_for_fast_1526685270361.xls.txt", header = T, stringsAsFactors = F)
+upS.84 = read.delim("week_84_up_in_slow_active_only_gsea_report_for_fast_1526685270361.xls.txt", header = T, stringsAsFactors = F)
+
+upF.728 = read.delim("week_728_up_in_fast_active_only_gsea_report_for_fast_1526685270361.xls.txt", header = T, stringsAsFactors = F)
+upS.728 = read.delim("week_728_up_in_slow_active_only_gsea_report_for_fast_1526685270361.xls.txt", header = T, stringsAsFactors = F)
+
+upA.0 = read.delim("week_0_up_in_active_gsea_report_for_fast_1526685270361.xls.txt", header = T, stringsAsFactors = F)
+upP.0 = read.delim("week_0_up_in_placebo_gsea_report_for_fast_1526685270361.xls.txt", header = T, stringsAsFactors = F)
+
+upA.84 = read.delim("week_84_up_in_active_gsea_report_for_fast_1526685270361.xls.txt", header = T, stringsAsFactors = F)
+upP.84 = read.delim("week_84_up_in_placebo_gsea_report_for_fast_1526685270361.xls.txt", header = T, stringsAsFactors = F)
+
+upA.728 = read.delim("week_728_up_in_active_gsea_report_for_fast_1526685270361.xls.txt", header = T, stringsAsFactors = F)
+upP.728 = read.delim("week_728_up_in_placebo_gsea_report_for_fast_1526685270361.xls.txt", header = T, stringsAsFactors = F)
+
+AP.0 = rbind(upA.0, upP.0)
+AP.84 = rbind(upA.84, upP.84)
+AP.728 = rbind(upA.728, upP.728)
+
+FS.0 = rbind(upF.0, upS.0)
+FS.84 = rbind(upF.84, upS.84)
+FS.728 = rbind(upF.728, upS.728)
+
+### make plot
+
+dev.off()
+quartz(width=9,height=9,dpi=72)  ### 
+theme_set(theme_bw(44) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+
+update_geom_defaults("point", aes(size = 14))
+
+gsea.name = c("FS.0")
+gsea <- get(gsea.name)
+
+colnames(gsea)[1] = c("Module")
+
+overlap <- read.delim("imune_module_overlap.txt", stringsAsFactors=FALSE)
+
+osig = subset(gsea, -log10(gsea[,7])>1)
+NOTsig = subset(gsea, -log10(gsea[,7])<1)
+
+module.1 = c("CD19.mod")
+
+module1.o = subset(overlap, overlap[, module.1] >0.05)
+module1.only = subset(overlap, overlap[, module.1] == 1)
+
+gsea.sub1 = subset(gsea, Module %in% toupper(module1.o$X))
+gsea.sub.module1 = subset(gsea, Module %in% toupper(module1.only$X))
+
+gsea$set = ifelse(gsea$Module == toupper(module.1), module.1,
+			ifelse(gsea$Module %in% gsea.sub1$Module & !gsea$Module %in% gsea.sub.module1$Module , paste(module.1, "overlap", sep = " "), "other modules"))
+			
+gsea$set = factor(gsea$set, levels = (c(module.1, paste(module.1, "overlap", sep = " "), "other modules")))
+#gsea$modules<-sub("module", "\nmodule\n ", gsea$modules)
+
+up.col = c("#ca0020")
+up.col.tint = c("#e47f8f")
+dn.col = c("#0571b0")
+		
+ggplot(gsea, aes(x = ES, y = -log10(FDR.q.val))) + geom_jitter(colour = "gray")
+last_plot() + geom_point(data = gsea.sub1, aes(x = ES, y = -log10(FDR.q.val)), colour = up.col.tint)
+last_plot() + geom_point(data = gsea.sub.module1, aes(x = ES, y = -log10(FDR.q.val)), colour = up.col)
+last_plot() + scale_x_continuous(limits = c(-1,1))
+last_plot() + scale_y_continuous(limits = c(-0.2,2))
+last_plot() + labs(x = "Enrichment score (ES)", y = "-log10(FDR)")
+last_plot() + geom_hline(yintercept = 1, lty = "dotted", size = 2)
+
+setwd("~/Desktop/")
+
+filename = paste(gsea.name, ".pdf", sep = "")
+quartz.save(filename,type = "pdf", dpi = 75, bg = "transparent")

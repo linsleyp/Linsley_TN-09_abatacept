@@ -1,0 +1,136 @@
+rm(list = ls())
+library(plyr)
+library(survival)
+library(gdata)
+library(survival)
+library(reshape2)
+library(ggplot2); library(reshape2)
+library(limma)
+library(ggsignif)
+library(lmerTest)
+library(car)
+
+## set defaults
+theme_set(theme_bw(26) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+update_geom_defaults("point", aes(size = 3))
+
+cbPalette = (c('#0072B2','#E69F00','#F0E442'))
+
+
+## load data
+
+setwd("~/Desktop/TN-09_GitHub/data_files")
+
+anno.keep <- read.delim("anno_TN-09_keep.libs.txt", stringsAsFactors=FALSE)
+anno.keep$date2 = as.Date(anno.keep$date, format = "%m/%d/%y")
+
+anno.keep = subset(anno.keep, !libID %in% c("lib4922", "lib4950", "lib4965", "lib4975", "lib4980", "lib4997", "lib5131")) # remove bad libs
+
+anno = anno.keep
+colnames(anno) = gsub("Day", "days", colnames(anno))
+anno$id.days = paste(anno$id, anno$days, sep = "_")
+
+## make sure correct age is used
+
+anno.clin = read.delim("TN09 Clinical_Unblinded Data_Linsley 20150511.txt", stringsAsFactors = F)
+colnames(anno.clin)[2] = c("id")
+anno.clin = anno.clin[, (1:9)]
+
+anno.keep = merge(anno, anno.clin, by = "id")
+
+## load auc
+
+auc <- read.delim("TN-09_2hr_C-peptide_AUC_with_normalization.txt")
+auc$days = auc$week*7
+auc$id.days = paste(auc$id, auc$days, sep = "_")
+
+anno.auc = merge(anno.keep, auc, by = "id.days")
+auc.sub = subset(anno.auc, libID %in% anno$libID)
+
+anno.active = subset(anno.auc, arm == "CTLA4Ig")
+
+anno = anno.keep
+
+## load autoantibody levels
+abs = read.delim("TN-09_autoantibody_levels_long_format.txt", sep = "\t")
+
+## load counts files
+
+CPMc = readRDS("combined_TN-09_TMM_batch_corr_date_method_after_redo_qc_071916.rds")
+
+slopes = read.csv("TN09.cpeptide_AUC_half-life_and_rate_of_change_from_models.csv", stringsAsFactors = F, header = T) # recalc without initial visit
+colnames(slopes) = c("id", "days.to.50.orig", "slope.orig", "days.to.50", "slope")
+
+slopes$days.to.50 = gsub("Inf", 42000, slopes$days.to.50)
+slopes$days.to.50 = as.numeric(slopes$days.to.50)
+
+anno.slopes = merge(anno, slopes, by = "id")
+anno.sub.active = subset(anno.slopes, arm == "CTLA4Ig") # active only
+anno.sub.placebo = subset(anno.slopes, arm == "Placebo") # active only
+
+counts = as.data.frame(CPMc)
+counts = subset(counts, select = colnames(counts) %in% anno.active$libID)
+
+anno.use = subset(anno.sub.active, libID %in% colnames(counts))
+counts.use = counts[anno.use$libID]
+
+## check that anno and counts are in same order
+
+table(ifelse(colnames(counts.use)== anno.use$libID, 1, 0)) # 175 = 1
+
+##
+surv = anno.slopes[c("libID", "id", "treatment", "days.to.50", "days")]
+colnames(surv) = gsub("days.to.50", "survival", colnames(surv))
+
+surv$status = ifelse(surv$survival <1080, 1, 0)
+#surv = surv[!duplicated(surv$id),]
+surv$survival = ifelse(surv$survival <1080, surv$survival, 1080)
+
+## load gene modules and select
+mods <- read.delim("Supp_Table_1_Genes\ in\ immune\ molecular\ modules.gmx")
+
+counts = counts.use
+anno = anno.use
+
+to.plot = anno.use
+
+mod.var = c("CD19.mod")
+
+counts.sub = subset(counts.use, row.names(counts.use) %in% mods[, mod.var])
+counts.sub = na.omit(counts.sub)
+med = apply(log2(counts.sub+1), 2, median)
+anno.use$med = as.numeric(med)
+
+## plot med x slope with lm
+
+dev.off()
+quartz(height =9, width =14, dpi =72);
+theme_set(theme_bw(44) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+update_geom_defaults("point", aes(size = 8))
+
+to.plot$days = factor(to.plot$days, levels = c("0", "84", "728"))
+
+to.plot = subset(anno.use, !days == 1080)
+ggplot(to.plot , aes(y = med, x = slope)) + geom_point(colour = "blue", alpha = 0.5)  + facet_grid(~days)
+last_plot() + geom_smooth(method='lm',formula=y~x)
+last_plot() + labs(x = "Rate of C-peptide loss, AUC/day", y = "B cell gene expression,\nlog2(median(CD19.mod+1)")
+last_plot() + scale_x_continuous(limits = c(-2, 0.25), breaks = c(0,-1, -2))
+last_plot() + scale_y_continuous(limits = c(3, 5.5), breaks = c(3,4,5))
+
+# iteratively calculate p-values for individual days
+
+to.plot$days = as.character(to.plot$days)
+xnames = unique(to.plot$days)
+xnames = as.character(xnames)
+ncx = length(xnames)
+
+DF = data.frame(Day = as.numeric(), pval = as.numeric())
+
+for (i in 1:ncx){
+	q = as.character(xnames[i])
+	qsub = to.plot[to.plot$days == q,]
+	m = lm(med~slope, qsub); summary(m)
+	pval = summary(m)$coefficients["slope",4]
+	result = c(q, pval)
+	DF[i,] = result
+	}

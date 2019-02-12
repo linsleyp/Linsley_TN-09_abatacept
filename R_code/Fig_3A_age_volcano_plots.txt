@@ -1,0 +1,82 @@
+rm(list = ls())
+library(plyr)
+library(survival)
+library(gdata)
+library(survival)
+library(reshape2)
+library(ggplot2); library(reshape2)
+library(limma)
+library(ggsignif)
+library(lmerTest)
+library(car)
+
+## set defaults
+theme_set(theme_bw(26) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+update_geom_defaults("point", aes(size = 3))
+
+## load limma tables
+setwd("~/Desktop/TN-09_GitHub/data_files/limma")
+
+age =  read.delim("Visit_84_contrast_age_model_age_limma_TN-09_batch_corr_bad_libs_removed_active_only_051818.txt", stringsAsFactors = F)
+
+to.plot.name = c("age")
+to.plot = get(to.plot.name)
+
+##load modules
+setwd("~/Desktop/TN-09_GitHub/data_files")
+
+old.mods <- read.delim("Supp_Table_1_Genes\ in\ immune\ molecular\ modules.gmx")
+modID1 = c("CD19.mod")
+modID2 = c("MPO.mod")
+
+mod.genes1 = data.frame(old.mods[,modID1])
+colnames(mod.genes1)[1] = c("symbol")
+mod.genes1 = na.omit(mod.genes1) #93
+
+mod.genes2 = data.frame(old.mods[,modID2])
+colnames(mod.genes2)[1] = c("symbol")
+mod.genes2 = na.omit(mod.genes2) #93
+
+to.plot.sub1 = subset(to.plot, row.names(to.plot) %in% mod.genes1$symbol)
+to.plot.sub2 = subset(to.plot, row.names(to.plot) %in% mod.genes2$symbol)
+
+to.plot.sub = rbind(to.plot.sub1, to.plot.sub2)
+
+## make plots
+
+dev.off()
+quartz(height =9, width =9, dpi =72);
+update_geom_defaults("point", aes(size = 6))
+
+## set defaults
+theme_set(theme_bw(36) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+
+fdr = -log10(0.2) # 0.699
+up.col = c("#ca0020")
+dn.col = c("#0571b0")
+
+ggplot(to.plot, aes(x = logFC, y = -log10(adj.P.Val))) + geom_point(colour = "grey") #add individual dots
+last_plot() + geom_point(data = to.plot.sub1, aes(x = logFC, y = -log10(adj.P.Val)), colour = up.col, alpha = 0.5)
+last_plot() + geom_point(data = to.plot.sub2, aes(x = logFC, y = -log10(adj.P.Val)), colour = dn.col, alpha = 0.5)
+
+last_plot() + scale_x_continuous(limits = c(-0.1,0.1))
+#last_plot() + scale_y_continuous(limits = c(-0,1.2))
+last_plot() + labs(x = "logFC", y = "-log10(FDR)")
+last_plot() + geom_hline(yintercept = fdr, lty = "dotted", size = 2)
+
+labGenes1 = c("CD19", "CD22", "MS4A1", "CD72", "IGHD", "IGHM")
+labGenes2 = c("ELANE", "DEFA3", "AZU1", "MPO", "S100A9", "DEFA4")
+
+labGenes = c(labGenes1, labGenes2)
+
+tLabs = subset(to.plot.sub, row.names(to.plot.sub) %in% labGenes)
+tLabs = data.frame(symbol = row.names(tLabs), tLabs)
+
+last_plot()+ geom_text_repel(aes(label = symbol), data = tLabs, size = 10, arrow = arrow(length = unit(0.02, "npc")),box.padding = 2)
+
+last_plot() + scale_y_continuous(limits = c(0,3.5))
+
+setwd("~/Desktop/")
+
+filename = paste(to.plot.name, ".pdf", sep = "")
+#quartz.save(filename,type = "pdf", dpi = 75, bg = "transparent")

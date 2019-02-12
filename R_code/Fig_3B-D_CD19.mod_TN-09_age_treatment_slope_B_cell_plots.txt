@@ -1,0 +1,195 @@
+rm(list = ls())
+library(plyr)
+library(survival)
+library(gdata)
+library(survival)
+library(reshape2)
+library(ggplot2); library(reshape2)
+library(limma)
+library(ggsignif)
+library(lmerTest)
+library(car)
+
+## set defaults
+theme_set(theme_bw(26) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.key = element_blank()))
+update_geom_defaults("point", aes(size = 3))
+
+## load values
+
+setwd("~/Desktop/TN-09_GitHub/data_files")
+
+###### set variables
+
+visit.time = c(84)
+
+top = 0.75 # quantiles for stratification
+bot = 0.25
+
+mod = c("MPO.mod")
+
+######
+
+anno.keep <- read.delim("anno_TN-09_keep.libs.txt", stringsAsFactors=FALSE)
+anno.keep$date2 = as.Date(anno.keep$date, format = "%m/%d/%y")
+
+anno.keep = subset(anno.keep, !libID %in% c("lib4922", "lib4950", "lib4965", "lib4975", "lib4980", "lib4997", "lib5131")) # remove bad libs
+
+anno = anno.keep
+colnames(anno) = gsub("Day", "days", colnames(anno))
+anno$id.days = paste(anno$id, anno$days, sep = "_")
+
+anno.active = subset(anno.auc, arm == "CTLA4Ig")
+
+## make sure correct age is used
+anno.clin = read.delim("TN09 Clinical_Unblinded Data_Linsley 20150511.txt", stringsAsFactors = F)
+colnames(anno.clin)[2] = c("id")
+anno.clin = anno.clin[, (1:9)]
+
+anno.keep = merge(anno, anno.clin, by = "id")
+
+anno = anno.keep
+
+## load auc
+
+auc <- read.delim("TN-09_2hr_C-peptide_AUC_with_normalization.txt")
+auc$days = auc$week*7
+auc$id.days = paste(auc$id, auc$days, sep = "_")
+
+anno.auc = merge(anno, auc, by = "id.days")
+auc.sub = subset(anno.auc, libID %in% anno$libID)
+
+## load autoantibody levels
+abs = read.delim("TN-09_autoantibody_levels_long_format.txt", sep = "\t")
+
+## load counts files
+
+CPMc = readRDS("combined_TN-09_TMM_batch_corr_date_method_after_redo_qc_071916.rds")
+
+slopes = read.csv("TN09.cpeptide_AUC_half-life_and_rate_of_change_from_models.csv", stringsAsFactors = F, header = T) # recalc without initial visit
+colnames(slopes) = c("id", "days.to.50.orig", "slope.orig", "days.to.50", "slope")
+
+slopes$days.to.50 = gsub("Inf", 42000, slopes$days.to.50)
+slopes$days.to.50 = as.numeric(slopes$days.to.50)
+
+counts = as.data.frame(CPMc)
+counts = subset(counts, select = colnames(counts) %in% anno$libID)
+
+anno.slopes = merge(anno, slopes, by = "id")
+anno.sub.active = subset(anno.slopes, days == visit.time & arm == "CTLA4Ig") # active only
+anno.sub.all = subset(anno.slopes, days == visit.time) # for all subjects
+
+counts.sub.all = subset(counts, select = colnames(counts) %in% anno.sub.all$libID)
+counts.sub.all = counts.sub.all[anno.sub.all$libID]
+
+counts.sub.active = subset(counts, select = colnames(counts) %in% anno.sub.active$libID)
+counts.sub.active = counts.sub.active[anno.sub.active$libID]
+
+## check that anno and counts are in same order
+
+table(ifelse(colnames(counts.sub.all)== anno.sub.all$libID, 1, 0)) # 87 = 1
+table(ifelse(colnames(counts.sub.active)== anno.sub.active$libID, 1, 0)) # 57 = 1
+
+##
+surv = anno.slopes[c("libID", "id", "treatment", "days.to.50", "days")]
+colnames(surv) = gsub("days.to.50", "survival", colnames(surv))
+
+surv$status = ifelse(surv$survival <1080, 1, 0)
+#surv = surv[!duplicated(surv$id),]
+surv$survival = ifelse(surv$survival <1080, surv$survival, 1080)
+
+## load gene modules and select
+old.mods <- read.delim("Supp_Table_1_Genes\ in\ immune\ molecular\ modules.gmx")
+
+q = mod
+qsub = as.data.frame(old.mods[,q])
+colnames(qsub)[1] = c("symbol")
+qsub = na.omit(qsub)
+
+## calculate median expression of module genes
+
+anno.use = anno.sub.active
+
+## select top and bottom progressors in treated subjects
+
+prob = 0.75
+q.cut = quantile(anno.use$slope, probs= prob)
+
+anno.use$q = ifelse(anno.use$slope>q.cut, "top",
+			ifelse(anno.use$slope<=q.cut, "bot", "middle"))
+top = subset(anno.use, anno.use$slope>q.cut) 
+bot = subset(anno.use, anno.use$slope<=q.cut) 
+
+placebo = subset(anno.sub.all, treatment == "placebo")
+
+## make plots using all data
+
+anno.use = anno.sub.all
+
+to.plot = anno.use
+counts.use = counts.sub.all
+counts.mod = subset(counts.use, row.names(counts.use) %in% qsub[,1])
+
+to.plot$age = ifelse(to.plot$Age.at.T1D.diagnosis >median(to.plot$Age.at.T1D.diagnosis), "older", "younger")
+
+to.plot$group = ifelse(to.plot$id %in% top$id, "R", 
+					ifelse(to.plot$id %in% bot$id, "NR",
+						ifelse(to.plot$id %in% placebo$id, "placebo", "other")))
+#
+to.plot$group = factor(to.plot$group, levels = c("placebo", "NR","R"))
+to.plot$mod = apply(log2(counts.mod+1), 2, median)
+
+## most informative plots
+
+## slope verus age, color by group
+
+dev.off() 
+quartz(height =8, width =11, dpi =72);
+theme_set(theme_bw(36) + theme(panel.grid.major = element_blank(), 
+                         panel.grid.minor = element_blank()) +
+                         theme(legend.key = element_blank()))
+update_geom_defaults("point", aes(size = 6))
+update_geom_defaults("line", aes(size = 2))
+
+cbPalette = c("#d7191c", "#084081", "#7bccc4")
+
+ggplot(data = to.plot, aes(x = Age.at.T1D.diagnosis, y = slope, colour = group)) + geom_point() + scale_colour_manual(values=cbPalette) + scale_size(range =c(1, 8))
+
+last_plot() + geom_smooth(method='lm',formula=y~x, aes(colour = group), se = F)
+xlab = "Age at diagnosis (years)"
+ylab = "C-peptide 2 hr AUC,\n(nmole/L/min)"
+last_plot() + labs(x = xlab, y = ylab)
+
+## tests
+
+to.plot$group = factor(to.plot$group, levels = c("placebo", "NR","R"))
+## tests
+to.plot$group = factor(to.plot$group, levels = c("placebo", "NR","R"))
+m = lm(slope~Age.at.T1D.diagnosis+group+Age.at.T1D.diagnosis:group, to.plot); summary(m) # Age.at.T1D.diagnosis vs. placebo slope p-value = 0.002185
+
+Anova(m, type="II")
+
+## Module  genes versus age, color by group
+
+dev.off() 
+quartz(height =8, width =11, dpi =72);
+theme_set(theme_bw(36) + theme(panel.grid.major = element_blank(), 
+                         panel.grid.minor = element_blank()) +
+                         theme(legend.key = element_blank()))
+update_geom_defaults("point", aes(size = 6))
+update_geom_defaults("line", aes(size = 2))
+
+cbPalette = c("#d7191c", "#084081", "#7bccc4")
+
+ggplot(data = to.plot, aes(x = Age.at.T1D.diagnosis, y = mod, colour = group)) + geom_point() + scale_colour_manual(values=cbPalette) + scale_size(range =c(1, 8))
+
+last_plot() + geom_smooth(method='lm',formula=y~x, aes(colour = group), se = F)
+xlab = "Age at diagnosis (years)"
+ylab = "B cell gene expression, \nlog2(median(CD19.mod+1))" # for mod = c("CD19.mod")
+ylab = "Neutrophil gene expression, \nlog2(median(MPO.mod+1))" # for mod = c("MPO.mod")
+
+last_plot() + labs(x = xlab, y = ylab)
+
+to.plot$group = factor(to.plot$group, levels = c("placebo", "NR","R"))
+m = lm(mod~Age.at.T1D.diagnosis+group + Age.at.T1D.diagnosis:group, to.plot); summary(m)
+Anova(m, type="II")
+
